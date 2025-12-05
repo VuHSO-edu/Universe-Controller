@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Golden Universe - Interactive HUD</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@300;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* --- GLOBAL & UTILS --- */
+        body { margin: 0; overflow: hidden; background-color: #000510; color: white; font-family: 'Rajdhani', sans-serif; }
+        
+        /* Glassmorphism Panel */
+        .glass-panel {
+            background: rgba(12, 20, 35, 0.65);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 255, 255, 0.15);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        /* Neon Text */
+        .text-neon {
+            color: #00ffff;
+            text-shadow: 0 0 5px rgba(0, 255, 255, 0.6), 0 0 10px rgba(0, 255, 255, 0.3);
+            font-family: 'Orbitron', sans-serif;
+        }
+
+        /* --- LOADING SCREEN --- */
+        #loader-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle at center, #0a1525 0%, #000000 100%);
+            z-index: 100;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            transition: opacity 0.8s ease-in-out;
+        }
+        .loader-ring {
+            width: 60px; height: 60px; border: 4px solid rgba(0, 255, 255, 0.2);
+            border-top: 4px solid #00ffff; border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* --- UI LAYOUT --- */
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #ui-layer { position: absolute; inset: 0; z-index: 10; pointer-events: none; } /* Pass events to canvas where needed */
+        
+        /* Interactable Elements needs pointer-events: auto */
+        .interactive { pointer-events: auto; }
+
+        /* --- HUD ELEMENTS --- */
+        .gesture-item {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            opacity: 0.5; transform: scale(0.95);
+            border-left: 3px solid transparent;
+        }
+        .gesture-item.active {
+            opacity: 1; transform: scale(1.02);
+            background: linear-gradient(90deg, rgba(0,255,255,0.1) 0%, transparent 100%);
+            border-left: 3px solid #00ffff;
+            padding-left: 12px; /* Slight slide right */
+        }
+
+        /* Webcam styling */
+        #webcam-container {
+            position: absolute; bottom: 30px; right: 30px;
+            width: 180px; height: 135px;
+            border-radius: 12px; overflow: hidden;
+            border: 2px solid rgba(0, 255, 255, 0.3);
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+        #webcam-feed { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        .scan-line {
+            position: absolute; top: 0; left: 0; width: 100%; height: 4px;
+            background: rgba(0, 255, 255, 0.6);
+            box-shadow: 0 0 10px #00ffff;
+            animation: scan 3s linear infinite;
+            opacity: 0.5;
+        }
+        @keyframes scan { 0% { top: 0%; } 100% { top: 100%; } }
+
+        /* Toggle Button */
+        #menu-toggle {
+            transition: transform 0.3s;
+        }
+        #menu-toggle:hover { transform: rotate(90deg); }
+
+        /* Smooth Hide/Show */
+        .fade-enter { opacity: 0; transform: translateY(-20px); }
+        .fade-enter-active { opacity: 1; transform: translateY(0); transition: all 0.5s ease; }
+        .hidden-panel { opacity: 0; transform: translateX(-20px); pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div id="loader-screen">
+        <div class="loader-ring mb-4"></div>
+        <div class="text-neon tracking-[0.2em] text-xl">INITIALIZING CORE</div>
+        <div class="text-gray-500 text-sm mt-2 font-mono" id="loader-text">Loading Assets...</div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer" class="p-6 flex flex-col justify-between h-full">
+        
+        <div class="flex justify-between items-start w-full">
+            <div class="glass-panel px-6 py-3 rounded-br-2xl rounded-tl-xl border-l-4 border-l-cyan-400 fade-enter interactive">
+                <h1 class="text-2xl font-bold text-neon leading-none">STAR CORE</h1>
+                <p class="text-xs text-cyan-200 tracking-wider opacity-70">INTERACTIVE UNIVERSE v2.0</p>
+            </div>
+
+            <button id="toggle-btn" class="glass-panel p-3 rounded-full hover:bg-cyan-900/40 text-cyan-400 interactive transition-colors duration-300">
+                <svg id="menu-toggle" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            </button>
+        </div>
+
+        <div id="control-panel" class="absolute top-24 left-6 w-72 glass-panel rounded-xl p-5 transition-all duration-500 interactive">
+            <h3 class="text-cyan-400 font-bold uppercase text-sm mb-3 tracking-widest border-b border-cyan-900/50 pb-2">Control Systems</h3>
+            
+            <div class="space-y-4">
+                <div id="gesture-fist" class="gesture-item flex items-center p-2 rounded-lg">
+                    <div class="w-8 h-8 flex items-center justify-center bg-cyan-900/50 rounded mr-3 text-xl">✊</div>
+                    <div>
+                        <div class="font-bold text-white leading-tight">Xoay Trục</div>
+                        <div class="text-xs text-gray-400">Nắm tay & Di chuyển</div>
+                    </div>
+                </div>
+
+                <div id="gesture-zoom" class="gesture-item flex items-center p-2 rounded-lg">
+                    <div class="w-8 h-8 flex items-center justify-center bg-cyan-900/50 rounded mr-3 text-xl">✌️</div>
+                    <div>
+                        <div class="font-bold text-white leading-tight">Phóng to/Nhỏ</div>
+                        <div class="text-xs text-gray-400">2 Ngón tay (V-Sign)</div>
+                    </div>
+                </div>
+
+                <div id="gesture-open" class="gesture-item flex items-center p-2 rounded-lg">
+                    <div class="w-8 h-8 flex items-center justify-center bg-cyan-900/50 rounded mr-3 text-xl">🖐</div>
+                    <div>
+                        <div class="font-bold text-white leading-tight">Cuộn (Roll)</div>
+                        <div class="text-xs text-gray-400">Xòe tay & Nghiêng</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-4 pt-3 border-t border-cyan-900/50">
+                <div class="flex items-center justify-between text-xs font-mono">
+                    <span class="text-gray-500">STATUS:</span>
+                    <span id="status-indicator" class="text-orange-400 animate-pulse">SEARCHING...</span>
+                </div>
+                <div class="text-[10px] text-gray-600 font-mono mt-1" id="debug-coords">x: 0 | y: 0</div>
+            </div>
+        </div>
+
+        <div id="webcam-container" class="interactive group">
+            <video id="webcam-feed" autoplay playsinline muted></video>
+            <div class="scan-line"></div>
+            <div class="absolute bottom-0 left-0 w-full bg-black/60 text-[10px] text-center text-cyan-500 font-mono py-1 opacity-0 group-hover:opacity-100 transition-opacity">OPTICAL SENSOR</div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- UI MANAGER ---
+        const UIManager = {
+            loader: document.getElementById('loader-screen'),
+            panel: document.getElementById('control-panel'),
+            toggleBtn: document.getElementById('toggle-btn'),
+            status: document.getElementById('status-indicator'),
+            debug: document.getElementById('debug-coords'),
+            gestures: {
+                fist: document.getElementById('gesture-fist'),
+                zoom: document.getElementById('gesture-zoom'),
+                open: document.getElementById('gesture-open')
+            },
+
+            init() {
+                // Toggle Panel
+                this.toggleBtn.addEventListener('click', () => {
+                    this.panel.classList.toggle('hidden-panel');
+                    this.panel.classList.toggle('opacity-0');
+                });
+
+                // Remove Loader after delay
+                setTimeout(() => {
+                    this.loader.style.opacity = '0';
+                    setTimeout(() => this.loader.remove(), 800);
+                }, 2000);
+            },
+
+            setActiveGesture(type) {
+                // Reset all
+                Object.values(this.gestures).forEach(el => el.classList.remove('active'));
+                
+                // Set active
+                if(type && this.gestures[type]) {
+                    this.gestures[type].classList.add('active');
+                    this.status.innerText = "LOCKED: " + type.toUpperCase();
+                    this.status.className = "text-cyan-400 font-bold";
+                } else if (type === 'searching') {
+                    this.status.innerText = "SEARCHING...";
+                    this.status.className = "text-orange-400 animate-pulse";
+                } else {
+                    this.status.innerText = "IDLE";
+                    this.status.className = "text-gray-400";
+                }
+            },
+
+            updateDebug(x, y) {
+                this.debug.innerText = `X: ${x.toFixed(2)} | Y: ${y.toFixed(2)}`;
+            }
+        };
+
+        UIManager.init();
+
+        // --- 1. THREE.JS SETUP ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000510, 0.025); // Matching bg color
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 8;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        const universeGroup = new THREE.Group();
+        scene.add(universeGroup);
+
+        const centralSystem = new THREE.Group();
+        centralSystem.rotation.z = Math.PI / 8;
+        centralSystem.rotation.x = Math.PI / 8;
+        universeGroup.add(centralSystem);
+
+        // --- TEXTURES & MATERIALS ---
+        const getSharpTexture = () => {
+            const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.2, 'rgba(255,255,255,0.8)');
+            gradient.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = gradient; ctx.fillRect(0, 0, 64, 64);
+            return new THREE.Texture(canvas);
+        };
+        const sharpTexture = getSharpTexture(); sharpTexture.needsUpdate = true;
+
+        // --- PLANET SURFACE ---
+        const surfGeo = new THREE.BufferGeometry();
+        const surfCount = 6000;
+        const surfPos = new Float32Array(surfCount * 3);
+        const surfCols = new Float32Array(surfCount * 3);
+        const c1 = new THREE.Color(0xffaa00); const c2 = new THREE.Color(0xff4400);
+
+        for (let i = 0; i < surfCount; i++) {
+            const r = 1.8 + Math.random() * 0.4;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos((Math.random() * 2) - 1);
+            surfPos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+            surfPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            surfPos[i*3+2] = r * Math.cos(phi);
+            const c = c1.clone().lerp(c2, Math.random());
+            surfCols[i*3]=c.r; surfCols[i*3+1]=c.g; surfCols[i*3+2]=c.b;
+        }
+        surfGeo.setAttribute('position', new THREE.BufferAttribute(surfPos, 3));
+        surfGeo.setAttribute('color', new THREE.BufferAttribute(surfCols, 3));
+        const surfMat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, map: sharpTexture, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.9 });
+        centralSystem.add(new THREE.Points(surfGeo, surfMat));
+
+        // --- CORE GLOW ---
+        const glowCanvas = document.createElement('canvas'); glowCanvas.width=64; glowCanvas.height=64;
+        const gx = glowCanvas.getContext('2d');
+        const g = gx.createRadialGradient(32,32,0,32,32,32);
+        g.addColorStop(0, '#ccffff'); g.addColorStop(0.4, '#00aaff'); g.addColorStop(1, 'transparent');
+        gx.fillStyle = g; gx.fillRect(0,0,64,64);
+        const glowTex = new THREE.Texture(glowCanvas); glowTex.needsUpdate=true;
+        const coreSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x00ffff, blending: THREE.AdditiveBlending }));
+        coreSprite.scale.set(4,4,4);
+        centralSystem.add(coreSprite);
+
+        // --- RINGS ---
+        const createRing = (inR, outR, count, col1, col2) => {
+            const geo = new THREE.BufferGeometry();
+            const pos = new Float32Array(count * 3);
+            const cols = new Float32Array(count * 3);
+            const color1 = new THREE.Color(col1); const color2 = new THREE.Color(col2);
+            for(let i=0; i<count; i++) {
+                const r = inR + Math.random() * (outR-inR);
+                const th = Math.random() * Math.PI * 2;
+                pos[i*3] = r * Math.cos(th);
+                pos[i*3+1] = (Math.random()-0.5)*0.15;
+                pos[i*3+2] = r * Math.sin(th);
+                const c = color1.clone().lerp(color2, (r-inR)/(outR-inR));
+                cols[i*3]=c.r; cols[i*3+1]=c.g; cols[i*3+2]=c.b;
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+            return new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.06, vertexColors: true, map: sharpTexture, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.6, transparent: true }));
+        };
+        centralSystem.add(createRing(3.5, 5.5, 8000, 0xffd700, 0xff8800)); // Gold
+        centralSystem.add(createRing(5.8, 6.5, 4000, 0x00ffff, 0x0055ff)); // Blue
+
+        // --- STARS ---
+        const starGeo = new THREE.BufferGeometry();
+        const starPos = new Float32Array(3000 * 3);
+        const starCol = new Float32Array(3000 * 3);
+        for(let i=0; i<3000; i++) {
+            const r = 20 + Math.random() * 80;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos((Math.random() * 2) - 1);
+            starPos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+            starPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            starPos[i*3+2] = r * Math.cos(phi);
+            const c = new THREE.Color().setHSL(Math.random(), 0.5, 0.8);
+            starCol[i*3]=c.r; starCol[i*3+1]=c.g; starCol[i*3+2]=c.b;
+        }
+        starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        starGeo.setAttribute('color', new THREE.BufferAttribute(starCol, 3));
+        universeGroup.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ size: 0.2, vertexColors: true, map: sharpTexture, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8 })));
+
+        // --- LOGIC ---
+        let state = {
+            isHandDetected: false, 
+            targetQuaternion: new THREE.Quaternion(), 
+            targetZoom: 8, 
+            handX: 0, handY: 0, 
+            prevHandX: 0, prevHandY: 0, 
+            prevAngle: 0
+        };
+
+        const videoElement = document.getElementById('webcam-feed');
+
+        function onResults(results) {
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                state.isHandDetected = false; 
+                UIManager.setActiveGesture('searching');
+                return;
+            }
+            
+            state.isHandDetected = true;
+            const lm = results.multiHandLandmarks[0];
+            state.handX = 1 - lm[9].x; state.handY = lm[9].y;
+            UIManager.updateDebug(state.handX, state.handY);
+
+            const isFolded = (t, p) => Math.hypot(lm[t].x-lm[0].x, lm[t].y-lm[0].y) < Math.hypot(lm[p].x-lm[0].x, lm[p].y-lm[0].y);
+            const isFist = isFolded(8,6) && isFolded(12,10) && isFolded(16,14) && isFolded(20,18);
+            const isTwoFingers = !isFolded(8,6) && !isFolded(12,10) && isFolded(16,14) && isFolded(20,18);
+
+            const dx = lm[9].x - lm[0].x;
+            const dy = lm[9].y - lm[0].y;
+            const angle = Math.atan2(dy, dx);
+
+            if (isFist) {
+                UIManager.setActiveGesture('fist');
+                const dX = state.handX - state.prevHandX;
+                const dY = state.handY - state.prevHandY;
+                const sensitivity = 7;
+                const qY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dX * sensitivity);
+                const qX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), dY * sensitivity);
+                state.targetQuaternion.premultiply(qY).premultiply(qX);
+            } else if (isTwoFingers) {
+                UIManager.setActiveGesture('zoom');
+                const dist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                const t = (Math.max(0.02, Math.min(0.2, dist)) - 0.02) / 0.18;
+                state.targetZoom = 14 - (t * 10);
+            } else {
+                UIManager.setActiveGesture('open');
+                let dA = angle - state.prevAngle;
+                if (dA > Math.PI) dA -= Math.PI*2; if (dA < -Math.PI) dA += Math.PI*2;
+                if (Math.abs(dA) > 0.02) {
+                    const qZ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), dA * 2.5);
+                    state.targetQuaternion.premultiply(qZ);
+                }
+            }
+
+            state.prevHandX = state.handX; state.prevHandY = state.handY; state.prevAngle = angle;
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(onResults);
+
+        const cam = new Camera(videoElement, { onFrame: async () => await hands.send({image: videoElement}), width: 320, height: 240 });
+        cam.start();
+
+        // --- ANIMATION ---
+        let time = 0;
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.01;
+            
+            camera.position.z += (state.targetZoom - camera.position.z) * 0.05;
+            
+            if (state.isHandDetected) {
+                universeGroup.quaternion.slerp(state.targetQuaternion, 0.1);
+            } else {
+                state.targetQuaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), 0.0005));
+                universeGroup.quaternion.slerp(state.targetQuaternion, 0.05);
+            }
+
+            coreSprite.scale.setScalar(4 + Math.sin(time*3)*0.3);
+            centralSystem.rotation.y = time * 0.1;
+            
+            renderer.render(scene, camera);
+        }
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
